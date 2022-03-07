@@ -1,0 +1,153 @@
+variables:
+  GITLAB_REGISTRY: registry.gitlab.com
+  IMAGE_PATH: $GITLAB_REGISTRY/$CI_PROJECT_PATH
+  DOCKER_DRIVER: overlay2
+  DOCKER_HOST: 'tcp://localhost:2375'
+  DOCKER_TLS_CERTDIR: ""
+
+  KUBECONFIG: /etc/deploy/config
+  STAGING_NAMESPACE: ui-staging
+  PRODUCTION_NAMESPACE: ui-prod
+
+stages:
+  - test
+  - build
+  - deploy
+
+test:
+  stage: test
+  tags:
+    - eks-staging
+  only:
+    - merge_requests
+    - staging
+    - master
+  image: docker:19.03.5
+  services:
+    - docker:19.03.5-dind
+  variables:
+    GRADLE_OPTS: "-Dorg.gradle.daemon=false"
+  before_script:
+    - cat /etc/resolv.conf | sed -r "s/ndots:.*/ndots:1/" > /tmp/resolv.conf && cat /tmp/resolv.conf > /etc/resolv.conf
+    - apk update && apk --no-cache add openjdk11 --repository=http://dl-cdn.alpinelinux.org/alpine/edge/community
+    - export GRADLE_USER_HOME=`pwd`/.gradle
+  script:
+    - ./gradlew --build-cache assemble
+    - ./gradlew check
+  cache:
+    key: "$CI_COMMIT_REF_NAME"
+    policy: push
+    paths:
+      - build
+      - .gradle
+  artifacts:
+    paths:
+      - build/libs
+
+build:
+  stage: build
+  tags:
+    - eks-sg
+  image: docker:19.03.5
+  services:
+    - docker:19.03.5-dind
+  only:
+    - master
+  before_script:
+    - cat /etc/resolv.conf | sed -r "s/ndots:.*/ndots:1/" > /tmp/resolv.conf && cat /tmp/resolv.conf > /etc/resolv.conf
+    - apk update && apk add git
+    - apk add --no-cache openssh
+    - mkdir -p ~/.ssh
+    - echo "$SSH_PRIVATE_KEY" | tr -d '\r' > ~/.ssh/id_rsa
+    - chmod 600 ~/.ssh/id_rsa
+    - eval "$(ssh-agent -s)"
+    - ssh-add ~/.ssh/id_rsa
+    - ssh-keyscan -t rsa gitlab.com >> ~/.ssh/known_hosts
+    - chmod 644 ~/.ssh/known_hosts
+    - git config --global user.email "devops@eyeota.com"
+    - git config --global user.name "Gitlab Runner"
+    - docker login -u $DOCKER_REGISTRY_USER -p $DOCKER_REGISTRY_PASSWORD
+  script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $GITLAB_REGISTRY
+    - docker run --rm -v "$PWD":/app treeder/bump patch
+    - export version=`cat VERSION`
+    - git remote rm origin && git remote add origin git@gitlab.com:$CI_PROJECT_PATH.git
+    - git add VERSION
+    - git commit -m "update version number to $version"
+    - git tag -a "$version" -m "version $version"
+    - git push -o ci.skip origin HEAD:$CI_COMMIT_REF_NAME --tags
+
+    # - docker build -t $IMAGE_PATH:latest .
+    - docker build --network host -t $IMAGE_PATH:latest .
+    - docker tag $IMAGE_PATH:latest $IMAGE_PATH:$version
+    - docker push $IMAGE_PATH:latest
+    - docker push $IMAGE_PATH:$version
+
+  artifacts:
+    paths:
+      - VERSION
+
+build_staging:
+  stage: build
+  tags:
+    - eks-staging
+  image: docker:19.03.5
+  services:
+    - docker:19.03.5-dind
+  only:
+    - staging
+  before_script:
+    - cat /etc/resolv.conf | sed -r "s/ndots:.*/ndots:1/" > /tmp/resolv.conf && cat /tmp/resolv.conf > /etc/resolv.conf
+    - docker login -u $DOCKER_REGISTRY_USER -p $DOCKER_REGISTRY_PASSWORD
+
+  script:
+    - docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $GITLAB_REGISTRY
+    - docker build --network host -t $IMAGE_PATH/staging:$CI_PIPELINE_ID .
+    - docker push $IMAGE_PATH/staging:$CI_PIPELINE_ID
+
+deploy_staging:
+  image: registry.gitlab.com/gitlab-org/cloud-deploy/aws-base:latest
+  stage: deploy
+  tags:
+    - eks-staging
+  only:
+    - staging
+  before_script:
+    - mkdir -p /etc/deploy
+    - echo ${KUBE_CONFIG} | base64 -d > ${KUBECONFIG}
+    - curl -LO https://storage.googleapis.com/kubernetes-release/release/v1.18.0/bin/linux/amd64/kubectl
+    - chmod +x ./kubectl
+    - ./kubectl version
+  script:
+    - sed -i -e "s/:latest/\/staging:$CI_PIPELINE_ID/" k8s/staging/deployment.yaml
+    - ./kubectl apply -f k8s/service.yaml --namespace ${STAGING_NAMESPACE}
+    - ./kubectl apply -f k8s/staging/configmap.yaml --namespace ${STAGING_NAMESPACE}
+    - ./kubectl apply -f k8s/staging/deployment.yaml --namespace ${STAGING_NAMESPACE}
+
+  environment:
+    name: staging
+
+deploy_production:
+  image: registry.gitlab.com/gitlab-org/cloud-deploy/aws-base:latest
+  stage: deploy
+  tags:
+    - eks-sg
+  only:
+    - master
+  before_script:
+    - mkdir -p /etc/deploy
+    - echo ${KUBE_CONFIG} | base64 -d > ${KUBECONFIG}
+    - curl -LO https://storage.googleapis.com/kubernetes-release/release/v1.18.0/bin/linux/amd64/kubectl
+    - chmod +x ./kubectl
+    - ./kubectl version
+  script:
+    - export version=`cat VERSION`
+    - echo $version
+    - sed -i -e "s/:latest/:$version/" k8s/prod/deployment.yaml
+    - ./kubectl apply -f k8s/prod/configmap.yaml --namespace ${PRODUCTION_NAMESPACE}
+    - ./kubectl apply -f k8s/service.yaml --namespace ${PRODUCTION_NAMESPACE}
+    - ./kubectl apply -f k8s/prod/deployment.yaml --namespace ${PRODUCTION_NAMESPACE}
+
+  environment:
+    name: production
+  when: manual

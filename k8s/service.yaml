@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: taiyaki
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-internal: "true"
+spec:
+  ports:
+    - name: app
+      port: 4072
+      protocol: TCP
+      targetPort: 4072
+  selector:
+    app: taiyaki
+  type: LoadBalancer

@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: "taiyaki"
+  namespace: ui-prod
+spec:
+  selector:
+    matchLabels:
+      app: "taiyaki"
+  replicas: 1
+  strategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "7777"
+        prometheus.io/path: /metrics
+      labels:
+        app: "taiyaki"
+    spec:
+      imagePullSecrets:
+        - name: gitlab-registry
+      containers:
+        - name: "taiyaki"
+          image: registry.gitlab.com/eyeota/ui-management/taiyaki:latest
+          imagePullPolicy: Always
+          envFrom:
+            - configMapRef:
+                name: configmap-taiyaki
+          resources:
+            requests:
+              memory: "500Mi"
+              cpu: "0.5"
+            limits:
+              memory: "1G"
+              cpu: "1"
+          ports:
+            - name: app
+              containerPort: 4072
+            - name: admin
+              containerPort: 7777
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "1"

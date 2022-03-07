@@ -4,21 +4,16 @@ WORKDIR /home/gradle/src
 
 COPY . .
 
-RUN gradle jar
+RUN gradle bootjar
 
 FROM openjdk:11.0.7-jre-slim AS runtime
 
-RUN groupadd -r geogeeks && useradd -r -s /bin/false -g geogeeks geogeek
-
-LABEL maintainer="lomasz"
-LABEL name="Spring Boot Template"
-LABEL version="0.0.1-SNAPSHOT"
-LABEL description="Spring Boot Template"
+LABEL maintainer="eyeota"
+LABEL name="taiyaki"
+LABEL description="Api Service for Fugu"
 
 COPY --from=builder /home/gradle/src/build/libs/*.jar /app.jar
 
-EXPOSE 4326
-
-USER geogeek
+EXPOSE 4072
 
 ENTRYPOINT ["java", "-jar", "/app.jar"]

@@ -15,7 +15,7 @@ ext {
     swaggerVersion = "1.4.6"
 }
 
-group = "com.lomasz.spring.boot.template"
+group = "com.eyeota.api.taiyaki"
 version = "0.0.1-SNAPSHOT"
 sourceCompatibility = JavaVersion.VERSION_11
 
